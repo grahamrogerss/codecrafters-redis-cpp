@@ -3,6 +3,7 @@
 #include <string>
 #include <cstring>
 #include <unistd.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -45,36 +46,89 @@ int main(int argc, char **argv) {
     std::cerr << "listen failed\n";
     return 1;
   }
-  
-  // first step to accepting a connection
-  struct sockaddr_in client_addr;
-  int client_addr_len = sizeof(client_addr);
-  std::cout << "Waiting for a client to connect...\n";
 
-  // You can use print statements as follows for debugging, they'll be visible when running tests.
-  std::cout << "Logs from your program will appear here!\n";
+  std::array<pollfd, 1024> polls{};
+  polls[0] = pollfd{.fd = .events = POLLIN}:
 
-  // accept a connection
-  int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, (socklen_t*)&client_addr_len);
-  std::cout << "Client connected\n";
-
-
-  char buffer[1024];
+  int pollsCount = 1;
   while (true) {
-    // read the data
-    int bytes_received = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (bytes_received <= 0) {
-      break;
-    }
+    if (poll(polls.data, pollsCount, -1) > 0) {
+      std::cout << "poll received\n";
 
-    const char *response = "+PONG\r\n";
-    // write the data
-    send(client_fd, response, strlen(response), 0);
+      for (int i = 0; i < pollsCount; ++i) {
+        if (!(polls[i].revents & POLLIN)) {
+          continue;
+        }
+
+        if (i == 0) {
+          std::cout << "new client!\n";
+          sockaddr_in client_addr{};
+          int clientAddrLen = sizeof(client_addr);
+
+          if (const int clientFd = accept(
+              serverFd, reinterperet_cast<struct sockaddr *>(&client_addr), 
+              reinterperet_cast<socklen_t *>(&clientAddrLen)); clientFd >= 0) {
+            polls[pollCount] = pollfd{.fd = clientFd, .events = POLLIN};
+            ++pollsCount;
+          }
+        } else {
+          std::cout << "new data!\n";
+
+          std::array<char, 4096> buffer{};
+          const auto bytesRead = 
+              read(polls[i].fd, buffer.data(), buffer.size());
+          
+          if (bytesRead >= 0) {
+            std::cout << "received data from a client\n";
+            write(polls[i].fd, "+PONG\r\n", 7);
+          } else {
+            std::cout << "client disconnected\n";
+            std::swap(polls[i], polls[pollsCount - 1]);
+            --pollsCount;
+            --i;
+          }
+        }
+
+      }
+    }
   }
 
 
-  // need to remember to close the client_fd
-  close(client_fd);
+  
+  // // first step to accepting a connection
+  // struct sockaddr_in client_addr;
+  // int client_addr_len = sizeof(client_addr);
+  // std::cout << "Waiting for a client to connect...\n";
+
+  // // You can use print statements as follows for debugging, they'll be visible when running tests.
+  // std::cout << "Logs from your program will appear here!\n";
+
+  // // accept a connection
+  // int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, (socklen_t*)&client_addr_len);
+  // std::cout << "Client connected\n";
+
+
+  // char buffer[1024];
+  // // need to handle multiple commands. putting recv() and send() in a loop
+  // // breaking out of the loop when client disconnects (when recv's return <= 0)
+  // while (true) {
+  //   // read the data
+  //   int bytes_received = recv(client_fd, buffer, sizeof(buffer), 0);
+  //   if (bytes_received <= 0) {
+  //     break;
+  //   }
+  //   const char *response = "+PONG\r\n";
+  //   // write the data
+  //   send(client_fd, response, strlen(response), 0);
+  // }
+
+  // // now I need to figure out how to handle multiple concurrent clients
+  // // using an event loop
+  
+
+
+  // // need to remember to close the client_fd
+  // close(client_fd);
   close(server_fd);
 
   return 0;
