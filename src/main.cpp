@@ -63,12 +63,12 @@ int main(int argc, char **argv) {
         if (i == 0) {
           std::cout << "new client!\n";
           sockaddr_in client_addr{};
-          int clientAddrLen = sizeof(client_addr);
+          int client_addr_len = sizeof(client_addr);
 
-          if (const int clientFd = accept(
-              serverFd, reinterperet_cast<struct sockaddr *>(&client_addr), 
-              reinterperet_cast<socklen_t *>(&clientAddrLen)); clientFd >= 0) {
-            polls[pollCount] = pollfd{.fd = clientFd, .events = POLLIN};
+          if (const int client_fd = accept(
+              server_fd, reinterperet_cast<struct sockaddr *>(&client_addr), 
+              reinterperet_cast<socklen_t *>(&client_addr_len)); client_fd >= 0) {
+            polls[pollCount] = pollfd{.fd = client_fd, .events = POLLIN};
             ++pollsCount;
           }
         } else {
