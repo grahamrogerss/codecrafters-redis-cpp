@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(6379);
   
-  if (bind(server_fd, reinterperet_cast<sockaddr *>(&server_addr), sizeof(server_addr)) != 0) {
+  if (bind(server_fd, reinterperet_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
     std::cerr << "Failed to bind to port 6379\n";
     return 1;
   }
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
   }
 
   std::array<pollfd, 1024> polls{};
-  polls[0] = pollfd{.fd = .events = POLLIN}:
+  polls[0] = pollfd{.fd = server_fd, .events = POLLIN}:
 
   int pollsCount = 1;
   while (true) {
@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
 
           if (const int client_fd = accept(
               server_fd, reinterperet_cast<struct sockaddr *>(&client_addr), 
-              reinterperet_cast<socklen_t *>(&client_addr_len)); client_fd >= 0) {
+              reinterperet_cast<socklen_t*>(&client_addr_len)); client_fd >= 0) {
             polls[pollsCount] = pollfd{.fd = client_fd, .events = POLLIN};
             ++pollsCount;
           }
