@@ -57,6 +57,9 @@ int main(int argc, char **argv) {
   // an input coming into the poll.
   polls[0] = pollfd{.fd = server_fd, .events = POLLIN};
 
+  // creating a hashmap to store the stuff for get and set
+  std::unordered_map<std::string, std::string> map;
+
   // keeps track of how many active entries there are in the array
   int pollsCount = 1;
   while (true) {
@@ -153,6 +156,25 @@ int main(int argc, char **argv) {
               std::string arg = parsed_elements[1];
               std::string response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
 
+              write(polls[i].fd, response.c_str(), response.length());
+            }
+            else if (command == "SET" && parsed_elements.size() > 2) {
+              map[parsed_elements[1]] = parsed_elements[2];
+
+              write(polls[i].fd, "+OK\r\n", 5);
+            }
+            else if (command == "GET" && parsed_elements.size() > 1) {
+              // need to handle the case that the key doesn't exist
+              std::string response;
+              auto it = map.find(parsed_elements[1]);
+              if (it != map.end()) {
+                std::string arg = it->second;
+                response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+              }
+              else {
+                response = "$-1\r\n";
+              }
+              
               write(polls[i].fd, response.c_str(), response.length());
             }
             else {
