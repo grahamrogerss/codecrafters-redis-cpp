@@ -196,7 +196,6 @@ int main(int argc, char **argv) {
                   time = current_time_ms() + time;
                   map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
                 }
-                write(polls[i].fd, "+OK\r\n", 5);
               }
               else { 
                 // the time variable doesn't exist in this block, so I hard code it to 0
