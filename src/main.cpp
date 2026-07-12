@@ -11,6 +11,14 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unordered_map>
+#include <chrono>
+
+// you need to declare functions outside the other function
+long long current_time_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+  }
 
 int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
@@ -31,6 +39,14 @@ int main(int argc, char **argv) {
     std::cerr << "setsockopt failed\n";
     return 1;
   }
+
+  struct RedisValue {
+    std::string value;
+    long long expires_at;
+    bool has_expiry;
+  };
+
+  
   
   // bind to port 6379
   struct sockaddr_in server_addr;
@@ -58,8 +74,9 @@ int main(int argc, char **argv) {
   // an input coming into the poll.
   polls[0] = pollfd{.fd = server_fd, .events = POLLIN};
 
-  // creating a hashmap to store the stuff for get and set
-  std::unordered_map<std::string, std::string> map;
+  // creating a hashmap to store the stuff for get and set, the keys are strings
+  // and the vlaeus are RedisValues
+  std::unordered_map<std::string, RedisValue> map;
 
   // keeps track of how many active entries there are in the array
   int pollsCount = 1;
@@ -160,22 +177,56 @@ int main(int argc, char **argv) {
               write(polls[i].fd, response.c_str(), response.length());
             }
             else if (command == "SET" && parsed_elements.size() > 2) {
-              map[parsed_elements[1]] = parsed_elements[2];
-
+              // block for the expiry set read
+              if (parsed_elements.size() > 4) {
+                // need to convert to upper, do that with a loop
+                std::string time_command = parsed_elements[3];
+                for (char &c : time_command) {
+                  c = std::toupper(static_cast<unsigned char>(c));
+                }
+                if (time_command == "EX") {
+                  size_t time = stoi(parsed_elements[4]) * 1000;
+                  time = current_time_ms() + time;
+                  // because I'm initializing a struct here, I need curly braces not parenthesis
+                  map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
+                  
+                }
+                else if (time_command == "PX") {
+                  size_t time = stoi(parsed_elements[4]);
+                  time = current_time_ms() + time;
+                  map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
+                }
+                write(polls[i].fd, "+OK\r\n", 5);
+              }
+              else { 
+                // the time variable doesn't exist in this block, so I hard code it to 0
+                map[parsed_elements[1]] = RedisValue{parsed_elements[2], 0, false};
+              }
               write(polls[i].fd, "+OK\r\n", 5);
             }
             else if (command == "GET" && parsed_elements.size() > 1) {
               // need to handle the case that the key doesn't exist
               std::string response;
               auto it = map.find(parsed_elements[1]);
-              if (it != map.end()) {
-                std::string arg = it->second;
+              if (it != map.end() && !it->second.has_expiry) {
+                std::string arg = it->second.value;
                 response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+              }
+              // "it" points to the map pair, so I need the it->second
+              else if (it != map.end() && it->second.has_expiry) {
+                if (it->second.expires_at < current_time_ms()) {
+                  // erase "it" here in order to prevent memory leaks
+                  map.erase(it);
+                  response = "$-1\r\n";
+                }
+                else { 
+                  std::string arg = it->second.value;
+                  response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+                }
               }
               else {
                 response = "$-1\r\n";
               }
-              
               write(polls[i].fd, response.c_str(), response.length());
             }
             else {
