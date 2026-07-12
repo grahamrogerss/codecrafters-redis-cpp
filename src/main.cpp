@@ -20,6 +20,8 @@ long long current_time_ms() {
     ).count();
   }
 
+// the two parameters argc and argv mena argument count and argument
+// vector, which is an array of C style strings containing the commands
 int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
@@ -46,16 +48,26 @@ int main(int argc, char **argv) {
     bool has_expiry;
   };
 
-  
+  // default port address will be 6379
+  int port_address = 6379;
+  // go through the arguments that are passed in
+  for (int i = 1; i < argc - 1; ++i) {
+    // you need this std::string() because otherwise it will just read
+    // the memory address
+    if (std::string(argv[i]) == "--port") {
+      port_address = std::stoi(argv[i + 1]);
+    }
+  }
+
   
   // bind to port 6379
   struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(6379);
+  server_addr.sin_port = htons(port_address);
   
   if (bind(server_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
-    std::cerr << "Failed to bind to port 6379\n";
+    std::cerr << "Failed to bind to port\n";
     return 1;
   }
   
@@ -197,7 +209,7 @@ int main(int argc, char **argv) {
                   map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
                 }
               }
-              else { 
+              else {
                 // the time variable doesn't exist in this block, so I hard code it to 0
                 map[parsed_elements[1]] = RedisValue{parsed_elements[2], 0, false};
               }
