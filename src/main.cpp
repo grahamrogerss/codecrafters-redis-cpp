@@ -50,12 +50,19 @@ int main(int argc, char **argv) {
 
   // default port address will be 6379
   int port_address = 6379;
+  // default role will be master, else slave
+  std::string role = "master";
   // go through the arguments that are passed in
   for (int i = 1; i < argc - 1; ++i) {
     // you need this std::string() because otherwise it will just read
     // the memory address
     if (std::string(argv[i]) == "--port") {
       port_address = std::stoi(argv[i + 1]);
+    }
+    // I don't think I have to worry about there not being another argument
+    // after the replicaof argument
+    if (std::string(argv[i]) == "--replicaof") {
+      role = "slave";
     }
   }
 
@@ -187,11 +194,16 @@ int main(int argc, char **argv) {
 
               write(polls[i].fd, response.c_str(), response.length());
             }
+            // need to check size of parsed elements because it's possible the
+            // input didn't even give another argument
             else if (command == "INFO" && parsed_elements.size() > 1) {
               std::string arg = parsed_elements[1];
+              // pretty much always need to convert to upper or lower in case of 
+              // unexpected inputs.
               for (char &c : arg) c = std::toupper(c);
               if (arg == "REPLICATION") {
-                std::string response = "$11\r\nrole:master\r\n";
+                // it's fine to hardcode this in for the first time around
+                std::string response = "$" + std::to_string(role.length() + 5) + "\r\nrole:" + role + "\r\n";
                 write(polls[i].fd, response.c_str(), response.length());
               }
               
