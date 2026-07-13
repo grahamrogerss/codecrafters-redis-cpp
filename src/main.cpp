@@ -59,8 +59,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  
-  // bind to port 6379
+  // bind to port
   struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -187,6 +186,16 @@ int main(int argc, char **argv) {
               std::string response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
 
               write(polls[i].fd, response.c_str(), response.length());
+            }
+            else if (command == "INFO" && parsed_elements.size() > 1) {
+              std::string arg = parsed_elements[1];
+              for (char &c : arg) c = std::toupper(c);
+              if (arg == "REPLICATION") {
+                std::string response = "$11\r\nrole:master\r\n";
+                write(polls[i].fd, response.c_str(), response.length());
+              }
+              
+
             }
             else if (command == "SET" && parsed_elements.size() > 2) {
               // block for the expiry set read
