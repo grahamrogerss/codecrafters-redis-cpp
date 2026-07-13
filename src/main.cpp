@@ -52,6 +52,12 @@ int main(int argc, char **argv) {
   int port_address = 6379;
   // default role will be master, else slave
   std::string role = "master";
+  // replication id is 40 characters random int
+  std::string replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+  // default offset = 0
+  int offset = 0;
+
+
   // go through the arguments that are passed in
   for (int i = 1; i < argc - 1; ++i) {
     // you need this std::string() because otherwise it will just read
@@ -202,12 +208,12 @@ int main(int argc, char **argv) {
               // unexpected inputs.
               for (char &c : arg) c = std::toupper(c);
               if (arg == "REPLICATION") {
-                // it's fine to hardcode this in for the first time around
-                std::string response = "$" + std::to_string(role.length() + 5) + "\r\nrole:" + role + "\r\n";
+                std::string payload = "role:" + role + "\r\n";
+                payload += "master_replid:" + replid + "\r\n";
+                payload += "master_repl_offset:" + std::to_string(offset) + "\r\n";
+                std::string response = "$" + std::to_string(payload.length()) + "\r\n" + payload + "\r\n";
                 write(polls[i].fd, response.c_str(), response.length());
               }
-              
-
             }
             else if (command == "SET" && parsed_elements.size() > 2) {
               // block for the expiry set read
