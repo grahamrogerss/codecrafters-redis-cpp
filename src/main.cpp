@@ -99,6 +99,10 @@ int main(int argc, char **argv) {
     struct sockaddr_in master_addr;
     master_addr.sin_family = AF_INET;
     master_addr.sin_port = htons(std::stoi(master_port));
+
+    if (master_host == "localhost") {
+      master_host = "127.0.0.1";
+    }
     // the replica socket is making a direct, outgoing call to the master, so you need the exact IP
     // so the inet_pton translates master_host into network binary and
     // inserts it into the sin_addr slot
@@ -115,6 +119,8 @@ int main(int argc, char **argv) {
     // operating system assigns to keep track of the open connection
     // the c_str function translates std::str into a c style string
     write(master_fd, response.c_str(), response.length());
+    std::array<char, 4096> buffer;
+    const auto bytesRead = read(master_fd, buffer.data(), buffer.size());
   }
   
 
