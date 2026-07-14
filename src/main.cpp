@@ -79,10 +79,15 @@ int main(int argc, char **argv) {
     }
     // a replica must simultaneously act like a server to the rest
     // of the world and a client to the master
-    else if (std::string(argv[i]) == "--replicaof" && i + 2 < argc) {
+    else if (std::string(argv[i]) == "--replicaof" && i + 1 < argc) {
       role = "slave";
-      master_host = argv[i + 1];
-      master_port = argv[i + 2];
+      std::string replicaof_arg = argv[i + 1];
+      size_t space_pos = replicaof_arg.find(' ');
+      
+      if (space_pos != std::string::npos) {
+        master_host = replicaof_arg.substr(0, space_pos);
+        master_port = replicaof_arg.substr(space_pos + 1);
+      }
     }
   }
 
@@ -113,8 +118,7 @@ int main(int argc, char **argv) {
     connect(master_fd, reinterpret_cast<sockaddr*>(&master_addr), sizeof(master_addr));
     
     // the handshake between the replica and the master
-    std::string response;
-    response = "*1\r\n$4\r\nPING\r\n";
+    std::string response = "*1\r\n$4\r\nPING\r\n";
     // the fd stands for file descriptor. master_fd is an operating number that the
     // operating system assigns to keep track of the open connection
     // the c_str function translates std::str into a c style string
@@ -122,31 +126,31 @@ int main(int argc, char **argv) {
     std::array<char, 4096> buffer;
     int bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    std::string port_str = std::to_string(port_address);
-    // 3 distinct words, so you need the *3
-    response = "*3\r\n";
-    // first word, 8 long
-    response += "$8\r\nREPLCONF\r\n";
-    // second, 14 long
-    response += "$14\r\nlistening-port\r\n";
-    // lastly for you port
-    response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
-    write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    // std::string port_str = std::to_string(port_address);
+    // // 3 distinct words, so you need the *3
+    // response = "*3\r\n";
+    // // first word, 8 long
+    // response += "$8\r\nREPLCONF\r\n";
+    // // second, 14 long
+    // response += "$14\r\nlistening-port\r\n";
+    // // lastly for you port
+    // response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
+    // write(master_fd, response.c_str(), response.length());
+    // bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    response = "*3\r\n";
-    response += "$8\r\nREPLCONF\r\n";
-    response += "$4\r\ncapa\r\n";
-    response += "$6\r\npsync2\r\n";
-    write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    // response = "*3\r\n";
+    // response += "$8\r\nREPLCONF\r\n";
+    // response += "$4\r\ncapa\r\n";
+    // response += "$6\r\npsync2\r\n";
+    // write(master_fd, response.c_str(), response.length());
+    // bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    response = "*3\r\n";
-    response += "$5\r\nPSYNC\r\n";
-    response += "$1\r\n?\r\n";
-    response += "$2\r\n-1\r\n";
-    write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    // response = "*3\r\n";
+    // response += "$5\r\nPSYNC\r\n";
+    // response += "$1\r\n?\r\n";
+    // response += "$2\r\n-1\r\n";
+    // write(master_fd, response.c_str(), response.length());
+    // bytesRead = read(master_fd, buffer.data(), buffer.size());
   }
   
 
