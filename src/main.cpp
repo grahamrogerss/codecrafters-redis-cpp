@@ -33,10 +33,21 @@ int main(int argc, char **argv) {
    std::cerr << "Failed to create server socket\n";
    return 1;
   }
-  
+
+  // create a socket for the master
+  int master_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (master_fd < 0) {
+    std::cerr << "Failed to create master socket\n";
+    return 1;
+  }
+  int reuse = 1;
+  if (setsockopt(master_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+    std::cerr << "setsockopt failed\n";
+    return 1;
+  }
   // Since the tester restarts your program quite often, setting SO_REUSEADDR
   // ensures that we don't run into 'Address already in use' errors
-  int reuse = 1;
+  reuse = 1;
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
     std::cerr << "setsockopt failed\n";
     return 1;
@@ -57,27 +68,58 @@ int main(int argc, char **argv) {
   // default offset = 0
   int offset = 0;
 
+  std::string master_host;
+  std::string master_port;
+
 
   // go through the arguments that are passed in
-  for (int i = 1; i < argc - 1; ++i) {
-    // you need this std::string() because otherwise it will just read
-    // the memory address
-    if (std::string(argv[i]) == "--port") {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--port" && i + 1 < argc) {
       port_address = std::stoi(argv[i + 1]);
     }
-    // I don't think I have to worry about there not being another argument
-    // after the replicaof argument
-    if (std::string(argv[i]) == "--replicaof") {
+    // a replica must simultaneously act like a server to the rest
+    // of the world and a client to the master
+    else if (std::string(argv[i]) == "--replicaof" && i + 2 < argc) {
       role = "slave";
+      master_host = argv[i + 1];
+      master_port = argv[i + 2];
     }
   }
 
-  // bind to port
+  // basic server bind to port
   struct sockaddr_in server_addr;
+  // AF_INET chooses the language, which is IPv4 addresses
   server_addr.sin_family = AF_INET;
+  // INADDR_ANY means "listen for incoming traffic on every IP address this computer owns"
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(port_address);
+
+  if (role == "slave") {
+    // gotta connect to master
+    struct sockaddr_in master_addr;
+    master_addr.sin_family = AF_INET;
+    master_addr.sin_port = htons(std::stoi(master_port));
+    // the replica socket is making a direct, outgoing call to the master, so you need the exact IP
+    // so the inet_pton translates master_host into network binary and
+    // inserts it into the sin_addr slot
+    inet_pton(AF_INET, master_host.c_str(), &master_addr.sin_addr);
+
+    // connect reaches out to a remote port to establish a link with someone else
+    // this is for the replica to connect to the master port for updates
+    connect(master_fd, reinterpret_cast<sockaddr*>(&master_addr), sizeof(master_addr));
+    
+    // step 1/3 of the handshake
+    std::string response;
+    response = "*1\r\n$4\r\nPING\r\n";
+    // the fd stands for file descriptor. master_fd is an operating number that the
+    // operating system assigns to keep track of the open connection
+    // the c_str function translates std::str into a c style string
+    write(master_fd, response.c_str(), response.length());
+  }
   
+
+  // bind assigns a local port and address to your own socket so others can find you
+  // so that incoming traffic knows exactly where to go
   if (bind(server_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
     std::cerr << "Failed to bind to port\n";
     return 1;
@@ -275,44 +317,6 @@ int main(int argc, char **argv) {
       }
     }
   }
-
-
-  
-  // // first step to accepting a connection
-  // struct sockaddr_in client_addr;
-  // int client_addr_len = sizeof(client_addr);
-  // std::cout << "Waiting for a client to connect...\n";
-
-  // // You can use print statements as follows for debugging, they'll be visible when running tests.
-  // std::cout << "Logs from your program will appear here!\n";
-
-  // // accept a connection
-  // int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, (socklen_t*)&client_addr_len);
-  // std::cout << "Client connected\n";
-
-
-  // char buffer[1024];
-  // // need to handle multiple commands. putting recv() and send() in a loop
-  // // breaking out of the loop when client disconnects (when recv's return <= 0)
-  // while (true) {
-  //   // read the data
-  //   int bytes_received = recv(client_fd, buffer, sizeof(buffer), 0);
-  //   if (bytes_received <= 0) {
-  //     break;
-  //   }
-  //   const char *response = "+PONG\r\n";
-  //   // write the data
-  //   send(client_fd, response, strlen(response), 0);
-  // }
-
-  // // now I need to figure out how to handle multiple concurrent clients
-  // // using an event loop
-  
-
-
-  // // need to remember to close the client_fd
-  // close(client_fd);
   close(server_fd);
-
   return 0;
 }
