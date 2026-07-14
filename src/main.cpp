@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     // this is for the replica to connect to the master port for updates
     connect(master_fd, reinterpret_cast<sockaddr*>(&master_addr), sizeof(master_addr));
     
-    // step 1/3 of the handshake
+    // the handshake between the replica and the master
     std::string response;
     response = "*1\r\n$4\r\nPING\r\n";
     // the fd stands for file descriptor. master_fd is an operating number that the
@@ -120,7 +120,34 @@ int main(int argc, char **argv) {
     // the c_str function translates std::str into a c style string
     write(master_fd, response.c_str(), response.length());
     std::array<char, 4096> buffer;
-    const auto bytesRead = read(master_fd, buffer.data(), buffer.size());
+    int bytesRead = read(master_fd, buffer.data(), buffer.size());
+
+    std::string port_str = std::to_str(port_address);
+    // 3 distinct words, so you need the *3
+    response = "*3\r\n";
+    // first word, 8 long
+    response += "$8\r\nREPLCONF\r\n";
+    // second, 14 long
+    response += "$14\r\nlistening-port\r\n";
+    // lastly for you port
+    response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
+
+    response = "*3\r\n";
+    response += "$8\r\nREPLCONF\r\n";
+    response += "$4\r\ncapa\r\n";
+    response += "$6\r\npsync2\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
+
+    response = "*3\r\n";
+    response += "$5\r\nPSYNC\r\n";
+    response += "$1\r\n?\r\n";
+    response += "$2\r\n-1\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
+
   }
   
 
