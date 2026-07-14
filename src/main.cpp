@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     std::array<char, 4096> buffer;
     int bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    std::string port_str = std::to_str(port_address);
+    std::string port_str = std::to_string(port_address);
     // 3 distinct words, so you need the *3
     response = "*3\r\n";
     // first word, 8 long
@@ -147,7 +147,6 @@ int main(int argc, char **argv) {
     response += "$2\r\n-1\r\n";
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
-
   }
   
 
@@ -299,14 +298,14 @@ int main(int argc, char **argv) {
                   c = std::toupper(static_cast<unsigned char>(c));
                 }
                 if (time_command == "EX") {
-                  size_t time = stoi(parsed_elements[4]) * 1000;
+                  long long time = stoi(parsed_elements[4]) * 1000;
                   time = current_time_ms() + time;
                   // because I'm initializing a struct here, I need curly braces not parenthesis
                   map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
                   
                 }
                 else if (time_command == "PX") {
-                  size_t time = stoi(parsed_elements[4]);
+                  long long time = stoi(parsed_elements[4]);
                   time = current_time_ms() + time;
                   map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
                 }
