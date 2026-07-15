@@ -145,12 +145,12 @@ int main(int argc, char **argv) {
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    // response = "*3\r\n";
-    // response += "$5\r\nPSYNC\r\n";
-    // response += "$1\r\n?\r\n";
-    // response += "$2\r\n-1\r\n";
-    // write(master_fd, response.c_str(), response.length());
-    // bytesRead = read(master_fd, buffer.data(), buffer.size());
+    response = "*3\r\n";
+    response += "$5\r\nPSYNC\r\n";
+    response += "$1\r\n?\r\n";
+    response += "$2\r\n-1\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
   }
   
 
