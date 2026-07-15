@@ -126,17 +126,17 @@ int main(int argc, char **argv) {
     std::array<char, 4096> buffer;
     int bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    // std::string port_str = std::to_string(port_address);
-    // // 3 distinct words, so you need the *3
-    // response = "*3\r\n";
-    // // first word, 8 long
-    // response += "$8\r\nREPLCONF\r\n";
-    // // second, 14 long
-    // response += "$14\r\nlistening-port\r\n";
-    // // lastly for you port
-    // response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
-    // write(master_fd, response.c_str(), response.length());
-    // bytesRead = read(master_fd, buffer.data(), buffer.size());
+    std::string port_str = std::to_string(port_address);
+    // 3 distinct words, so you need the *3
+    response = "*3\r\n";
+    // first word, 8 long
+    response += "$8\r\nREPLCONF\r\n";
+    // second, 14 long
+    response += "$14\r\nlistening-port\r\n";
+    // lastly for you port
+    response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
 
     // response = "*3\r\n";
     // response += "$8\r\nREPLCONF\r\n";
