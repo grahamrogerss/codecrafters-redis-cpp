@@ -138,12 +138,12 @@ int main(int argc, char **argv) {
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
 
-    // response = "*3\r\n";
-    // response += "$8\r\nREPLCONF\r\n";
-    // response += "$4\r\ncapa\r\n";
-    // response += "$6\r\npsync2\r\n";
-    // write(master_fd, response.c_str(), response.length());
-    // bytesRead = read(master_fd, buffer.data(), buffer.size());
+    response = "*3\r\n";
+    response += "$8\r\nREPLCONF\r\n";
+    response += "$4\r\ncapa\r\n";
+    response += "$6\r\npsync2\r\n";
+    write(master_fd, response.c_str(), response.length());
+    bytesRead = read(master_fd, buffer.data(), buffer.size());
 
     // response = "*3\r\n";
     // response += "$5\r\nPSYNC\r\n";
