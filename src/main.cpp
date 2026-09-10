@@ -180,6 +180,10 @@ int main(int argc, char **argv) {
   // and the vlaeus are RedisValues
   std::unordered_map<std::string, RedisValue> map;
 
+  // gotta use this data structure to keep track of the replicas for
+  // propogation purposes
+  std::vector<int> replica_fds;
+
   // keeps track of how many active entries there are in the array
   int pollsCount = 1;
   while (true) {
@@ -319,6 +323,10 @@ int main(int argc, char **argv) {
                 map[parsed_elements[1]] = RedisValue{parsed_elements[2], 0, false};
               }
               write(polls[i].fd, "+OK\r\n", 5);
+
+              for (i = 0; i < replica_fds.size(); ++i) {
+                write(replica_fds[i], request.c_str(), request.length());
+              }
             }
             else if (command == "GET" && parsed_elements.size() > 1) {
               // need to handle the case that the key doesn't exist
@@ -358,6 +366,13 @@ int main(int argc, char **argv) {
               // the type to unsigned char fixes this, but it needs to be cast 
               // back to const char* later
               const unsigned char empty_rdb_bytes[] = {
+                  // all this nonsense is the literal hardcoded binary content of an empty
+                  // Redis database file. because Redis stores all of it's data in RAM for 
+                  // extreme speed, a Redis database file is sort of acting like a videogame 
+                  // save state here. 
+                  // under the hood it's very strict and heavily compressed which is why
+                  // it has to be hardcoded as an array of raw hex bytes
+                  // hex bytes are just a human readable version of binary code
                   0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 
                   0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65, 0x64, 0x69, 
                   0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69, 0x6d, 0x65, 0xc2, 
@@ -370,6 +385,8 @@ int main(int argc, char **argv) {
 
               write(polls[i].fd, rdb_header.c_str(), rdb_header.length());
               write(polls[i].fd, empty_rdb.c_str(), empty_rdb.length());
+
+              replica_fds.push_back(polls[i].fd);
             }
             else {
               write(polls[i].fd, "+PONG\r\n", 7);
