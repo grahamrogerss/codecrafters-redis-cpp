@@ -352,7 +352,12 @@ int main(int argc, char **argv) {
               std::string response = "+FULLRESYNC " + replid + " 0\r\n";
               write(polls[i].fd, response.c_str(), response.length());
 
-              const char empty_rdb_bytes[] = {
+              // standard char types are signed on most platforms in C++ so
+              // their maximum value is 127. the compiler refuses to forcibly 
+              // compress those larger integers into a signed 8 bit space. changing
+              // the type to unsigned char fixes this, but it needs to be cast 
+              // back to const char* later
+              const unsigned char empty_rdb_bytes[] = {
                   0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 
                   0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65, 0x64, 0x69, 
                   0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69, 0x6d, 0x65, 0xc2, 
@@ -360,8 +365,8 @@ int main(int argc, char **argv) {
                   0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61, 0x73, 0x65, 0xc0, 0x00, 0xff, 
                   0xf1, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2
               };
-              std::string empty_rdb(empty_rdb_bytes, sizeof(empty_rdb_bytes));
-              std::string rdb_header = "$" + std.to_string(empty_rdb.length()) + "\r\n";
+              std::string empty_rdb(reinterpret_cast<const char*>(empty_rdb_bytes), sizeof(empty_rdb_bytes));
+              std::string rdb_header = "$" + std::to_string(empty_rdb.length()) + "\r\n";
 
               write(polls[i].fd, rdb_header.c_str(), rdb_header.length());
               write(polls[i].fd, empty_rdb.c_str(), empty_rdb.length());
