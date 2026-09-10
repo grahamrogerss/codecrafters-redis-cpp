@@ -345,6 +345,9 @@ int main(int argc, char **argv) {
               }
               write(polls[i].fd, response.c_str(), response.length());
             }
+            else if (command == "REPLCONF") {
+              write(polls[i].fd, "+OK\r\n", 5);
+            }
             else {
               write(polls[i].fd, "+PONG\r\n", 7);
             }
