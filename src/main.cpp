@@ -349,7 +349,7 @@ int main(int argc, char **argv) {
               write(polls[i].fd, "+OK\r\n", 5);
             }
             else if (command == "PSYNC") {
-              std::string response = "+FULLRESYNC " + replid + "0\r\n";
+              std::string response = "+FULLRESYNC " + replid + " 0\r\n";
               write(polls[i].fd, response.c_str(), response.length());
             }
             else {
