@@ -195,6 +195,39 @@ int main(int argc, char **argv) {
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(port_address);
 
+  // bind assigns a local port and address to your own socket so others can find you
+  // so that incoming traffic knows exactly where to go
+  if (bind(server_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
+    std::cerr << "Failed to bind to port\n";
+    return 1;
+  }
+  
+  // listen for connections
+  int connection_backlog = 5;
+  if (listen(server_fd, connection_backlog) != 0) {
+    std::cerr << "listen failed\n";
+    return 1;
+  }
+
+  // this creates an array of 1024 pollfd structures, all initialized to 0. keeps track
+  // of which client is currently active and waiting for attention.
+  std::array<pollfd, 1024> polls{}; 
+  // the master socket is the very first entry. assigning server_fd to .fd means keep an eye
+  // on this socket. .events = POLLIN (POLLIN means pull input) means only wake up if there is
+  // an input coming into the poll.
+  polls[0] = pollfd{.fd = server_fd, .events = POLLIN};
+
+  // creating a hashmap to store the stuff for get and set, the keys are strings
+  // and the vlaeus are RedisValues
+  std::unordered_map<std::string, RedisValue> map;
+
+  // gotta use this data structure to keep track of the replicas for
+  // propogation purposes
+  std::vector<int> replica_fds;
+
+  // keeps track of how many active entries there are in the array
+  int pollsCount = 1;
+
   if (role == "slave") {
     // gotta connect to master
     struct sockaddr_in master_addr;
@@ -254,38 +287,9 @@ int main(int argc, char **argv) {
   }
   
 
-  // bind assigns a local port and address to your own socket so others can find you
-  // so that incoming traffic knows exactly where to go
-  if (bind(server_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
-    std::cerr << "Failed to bind to port\n";
-    return 1;
-  }
   
-  // listen for connections
-  int connection_backlog = 5;
-  if (listen(server_fd, connection_backlog) != 0) {
-    std::cerr << "listen failed\n";
-    return 1;
-  }
 
-  // this creates an array of 1024 pollfd structures, all initialized to 0. keeps track
-  // of which client is currently active and waiting for attention.
-  std::array<pollfd, 1024> polls{}; 
-  // the master socket is the very first entry. assigning server_fd to .fd means keep an eye
-  // on this socket. .events = POLLIN (POLLIN means pull input) means only wake up if there is
-  // an input coming into the poll.
-  polls[0] = pollfd{.fd = server_fd, .events = POLLIN};
-
-  // creating a hashmap to store the stuff for get and set, the keys are strings
-  // and the vlaeus are RedisValues
-  std::unordered_map<std::string, RedisValue> map;
-
-  // gotta use this data structure to keep track of the replicas for
-  // propogation purposes
-  std::vector<int> replica_fds;
-
-  // keeps track of how many active entries there are in the array
-  int pollsCount = 1;
+  
   while (true) {
     // the -1 is a timeout value that means "wait indefinitely", the kernel pauses everything
     // here until something actually happens on one of the sockets that I registered
@@ -377,49 +381,16 @@ int main(int argc, char **argv) {
           
           if (!parsed_elements.empty()) {
             std::string command = parsed_elements[0];
-
             for (char &c : command) c = std::toupper(c);
 
-            if (command == "ECHO" && parsed_elements.size() > 1) {
-              std::string arg = parsed_elements[1];
-              std::string response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+            int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
+            handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
 
-              write(polls[i].fd, response.c_str(), response.length());
-            }
-            // need to check size of parsed elements because it's possible the
-            // input didn't even give another argument
-            else if (command == "INFO" && parsed_elements.size() > 1) {
-              std::string arg = parsed_elements[1];
-              // pretty much always need to convert to upper or lower in case of 
-              // unexpected inputs.
-              for (char &c : arg) c = std::toupper(c);
-              if (arg == "REPLICATION") {
-                std::string payload = "role:" + role + "\r\n";
-                payload += "master_replid:" + replid + "\r\n";
-                payload += "master_repl_offset:" + std::to_string(offset) + "\r\n";
-                std::string response = "$" + std::to_string(payload.length()) + "\r\n" + payload + "\r\n";
-                write(polls[i].fd, response.c_str(), response.length());
-              }
-            }
-            
-              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
-              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
-
-              // If it was a SET command from a client, propagate it to replicas
-              if (command == "SET" && polls[i].fd != master_fd) {
-                for (size_t j = 0; j < replica_fds.size(); ++j) {
-                  write(replica_fds[j], request.c_str(), request.length());
-                }
-              }
-              
-              // needed to changet this to j and to a type size_t because when I was using
-              // i it was overwriting the previous loop 
+            // If it was a SET command from a regular client, propagate it to replicas
+            if (command == "SET" && polls[i].fd != master_fd) {
               for (size_t j = 0; j < replica_fds.size(); ++j) {
                 write(replica_fds[j], request.c_str(), request.length());
               }
-            }
-            else {
-              write(polls[i].fd, "+PONG\r\n", 7);
             }
           }
         }
