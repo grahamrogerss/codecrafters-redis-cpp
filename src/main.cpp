@@ -118,6 +118,8 @@ void handle_command(const std::vector<std::string>& parsed_elements,
   else {
     if (reply_fd != -1) write(reply_fd, "+PONG\r\n", 7);
   }
+
+  
 }
 
 // the two parameters argc and argv mena argument count and argument
@@ -281,6 +283,23 @@ int main(int argc, char **argv) {
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
 
+    std::array<char, 4096> rdb_buffer;
+    int rdb_bytes_read = read(master_fd, rdb_buffer.data(), rdb_buffer.size());
+    if (rdb_bytes_read > 0) {
+      std::string header(rdb_buffer.data(), rdb_bytes_read);
+      if (header[0] == '$') {
+        size_t crlf = header.find("\r\n");
+        if (crlf != std::string::npos) {
+          int rdb_len = std::stoi(header.substr(1, crlf - 1));
+          int total_read = rdb_bytes_read - (crlf + 2);
+          while (total_read < rdb_len) {
+            int chunk = read(master_fd, rdb_buffer.data(), std::min(static_cast<size_t>(rdb_len - total_read), rdb_buffer.size()));
+            if (chunk <= 0) break;
+            total_read += chunk;
+          }
+        }
+      }
+    }
 
     polls[pollsCount] = pollfd{.fd = master_fd, .events = POLLIN};
     ++pollsCount;
