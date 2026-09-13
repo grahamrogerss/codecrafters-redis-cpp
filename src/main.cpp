@@ -283,24 +283,28 @@ int main(int argc, char **argv) {
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
 
+    // 2. Read and discard the RDB file sent by the master
+    std::string rdb_response;
     std::array<char, 4096> rdb_buffer;
-    int rdb_bytes_read = read(master_fd, rdb_buffer.data(), rdb_buffer.size());
-    if (rdb_bytes_read > 0) {
-      std::string header(rdb_buffer.data(), rdb_bytes_read);
-      if (header[0] == '$') {
-        size_t crlf = header.find("\r\n");
-        if (crlf != std::string::npos) {
-          int rdb_len = std::stoi(header.substr(1, crlf - 1));
-          int total_read = rdb_bytes_read - (crlf + 2);
-          while (total_read < rdb_len) {
-            int chunk = read(master_fd, rdb_buffer.data(), std::min(static_cast<size_t>(rdb_len - total_read), rdb_buffer.size()));
-            if (chunk <= 0) break;
-            total_read += chunk;
-          }
-        }
+    while (rdb_response.find("\r\n") == std::string::npos) {
+      int n = read(master_fd, rdb_buffer.data(), rdb_buffer.size());
+      if (n <= 0) break;
+      rdb_response.append(rdb_buffer.data(), n);
+    }
+
+    size_t crlf_pos = rdb_response.find("\r\n");
+    if (crlf_pos != std::string::npos && rdb_response[0] == '$') {
+      int rdb_len = std::stoi(rdb_response.substr(1, crlf_pos - 1));
+      int total_read = rdb_response.length() - (crlf_pos + 2);
+      while (total_read < rdb_len) {
+        int to_read = std::min(static_cast<size_t>(rdb_len - total_read), rdb_buffer.size());
+        int n = read(master_fd, rdb_buffer.data(), to_read);
+        if (n <= 0) break;
+        total_read += n;
       }
     }
 
+    // 3. NOW register master_fd for polling so it only receives clean RESP commands
     polls[pollsCount] = pollfd{.fd = master_fd, .events = POLLIN};
     ++pollsCount;
   }
