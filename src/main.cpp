@@ -13,12 +13,112 @@
 #include <unordered_map>
 #include <chrono>
 
+
+
+struct RedisValue {
+    std::string value;
+    long long expires_at;
+    bool has_expiry;
+  };
+
+
 // you need to declare functions outside the other function
 long long current_time_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()
     ).count();
   }
+
+
+void handle_command(const std::vector<std::string>& parsed_elements, 
+                    std::unordered_map<std::string, RedisValue>& map, 
+                    int reply_fd,
+                    const std::string& replid,
+                    std::vector<int>& replica_fds,
+                    const std::string& role) {
+  if (parsed_elements.empty()) return;
+  std::string command = parsed_elements[0];
+  for (char &c : command) c = std::toupper(c);
+
+  if (command == "SET" && parsed_elements.size() > 2) {
+    if (parsed_elements.size() > 4) {
+      std::string time_command = parsed_elements[3];
+      for (char &c : time_command) c = std::toupper(static_cast<unsigned char>(c));
+      long long time = stoi(parsed_elements[4]);
+      if (time_command == "EX") time *= 1000;
+      time = current_time_ms() + time;
+      map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
+    } else {
+      map[parsed_elements[1]] = RedisValue{parsed_elements[2], 0, false};
+    }
+    
+    if (reply_fd != -1) {
+      write(reply_fd, "+OK\r\n", 5);
+    }
+  }
+  else if (command == "GET" && parsed_elements.size() > 1) {
+    std::string response;
+    auto it = map.find(parsed_elements[1]);
+    if (it != map.end() && !it->second.has_expiry) {
+      std::string arg = it->second.value;
+      response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+    }
+    else if (it != map.end() && it->second.has_expiry) {
+      if (it->second.expires_at < current_time_ms()) {
+        map.erase(it);
+        response = "$-1\r\n";
+      }
+      else { 
+        std::string arg = it->second.value;
+        response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+      }
+    }
+    else {
+      response = "$-1\r\n";
+    }
+    if (reply_fd != -1) {
+      write(reply_fd, response.c_str(), response.length());
+    }
+  }
+  else if (command == "INFO" && parsed_elements.size() > 1) {
+    std::string arg = parsed_elements[1];
+    for (char &c : arg) c = std::toupper(c);
+    if (arg == "REPLICATION") {
+      std::string payload = "role:" + role + "\r\n";
+      payload += "master_replid:" + replid + "\r\n";
+      payload += "master_repl_offset:0\r\n";
+      std::string response = "$" + std::to_string(payload.length()) + "\r\n" + payload + "\r\n";
+      if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
+    }
+  }
+  else if (command == "REPLCONF") {
+    if (reply_fd != -1) write(reply_fd, "+OK\r\n", 5);
+  }
+  else if (command == "PSYNC") {
+    std::string response = "+FULLRESYNC " + replid + " 0\r\n";
+    if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
+
+    const unsigned char empty_rdb_bytes[] = {
+        0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 
+        0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65, 0x64, 0x69, 
+        0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69, 0x6d, 0x65, 0xc2, 
+        0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d, 0x65, 0x6d, 0xc2, 0xb0, 
+        0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61, 0x73, 0x65, 0xc0, 0x00, 0xff, 
+        0xf1, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2
+    };
+    std::string empty_rdb(reinterpret_cast<const char*>(empty_rdb_bytes), sizeof(empty_rdb_bytes));
+    std::string rdb_header = "$" + std::to_string(empty_rdb.length()) + "\r\n";
+
+    if (reply_fd != -1) {
+      write(reply_fd, rdb_header.c_str(), rdb_header.length());
+      write(reply_fd, empty_rdb.c_str(), empty_rdb.length());
+      replica_fds.push_back(reply_fd);
+    }
+  }
+  else {
+    if (reply_fd != -1) write(reply_fd, "+PONG\r\n", 7);
+  }
+}
 
 // the two parameters argc and argv mena argument count and argument
 // vector, which is an array of C style strings containing the commands
@@ -53,11 +153,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  struct RedisValue {
-    std::string value;
-    long long expires_at;
-    bool has_expiry;
-  };
+  
 
   // default port address will be 6379
   int port_address = 6379;
@@ -151,6 +247,10 @@ int main(int argc, char **argv) {
     response += "$2\r\n-1\r\n";
     write(master_fd, response.c_str(), response.length());
     bytesRead = read(master_fd, buffer.data(), buffer.size());
+
+
+    polls[pollsCount] = pollfd{.fd = master_fd, .events = POLLIN};
+    ++pollsCount;
   }
   
 
@@ -198,6 +298,10 @@ int main(int argc, char **argv) {
         // (POLLIN) then it's skipped
         if (!(polls[i].revents & POLLIN)) {
           continue;
+        }
+
+        if (polls[i].fd == master_fd) {
+
         }
 
         // since the first slot is the server socket, this check determines that the activity
@@ -297,96 +401,22 @@ int main(int argc, char **argv) {
                 write(polls[i].fd, response.c_str(), response.length());
               }
             }
-            else if (command == "SET" && parsed_elements.size() > 2) {
-              // block for the expiry set read
-              if (parsed_elements.size() > 4) {
-                // need to convert to upper, do that with a loop
-                std::string time_command = parsed_elements[3];
-                for (char &c : time_command) {
-                  c = std::toupper(static_cast<unsigned char>(c));
-                }
-                if (time_command == "EX") {
-                  long long time = stoi(parsed_elements[4]) * 1000;
-                  time = current_time_ms() + time;
-                  // because I'm initializing a struct here, I need curly braces not parenthesis
-                  map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
-                  
-                }
-                else if (time_command == "PX") {
-                  long long time = stoi(parsed_elements[4]);
-                  time = current_time_ms() + time;
-                  map[parsed_elements[1]] = RedisValue{parsed_elements[2], time, true};
-                }
-              }
-              else {
-                // the time variable doesn't exist in this block, so I hard code it to 0
-                map[parsed_elements[1]] = RedisValue{parsed_elements[2], 0, false};
-              }
-              write(polls[i].fd, "+OK\r\n", 5);
+            
+              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
+              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
 
-              for (i = 0; i < replica_fds.size(); ++i) {
-                write(replica_fds[i], request.c_str(), request.length());
-              }
-            }
-            else if (command == "GET" && parsed_elements.size() > 1) {
-              // need to handle the case that the key doesn't exist
-              std::string response;
-              auto it = map.find(parsed_elements[1]);
-              if (it != map.end() && !it->second.has_expiry) {
-                std::string arg = it->second.value;
-                response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
-              }
-              // "it" points to the map pair, so I need the it->second
-              else if (it != map.end() && it->second.has_expiry) {
-                if (it->second.expires_at < current_time_ms()) {
-                  // erase "it" here in order to prevent memory leaks
-                  map.erase(it);
-                  response = "$-1\r\n";
-                }
-                else { 
-                  std::string arg = it->second.value;
-                  response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
+              // If it was a SET command from a client, propagate it to replicas
+              if (command == "SET" && polls[i].fd != master_fd) {
+                for (size_t j = 0; j < replica_fds.size(); ++j) {
+                  write(replica_fds[j], request.c_str(), request.length());
                 }
               }
-              else {
-                response = "$-1\r\n";
+              
+              // needed to changet this to j and to a type size_t because when I was using
+              // i it was overwriting the previous loop 
+              for (size_t j = 0; j < replica_fds.size(); ++j) {
+                write(replica_fds[j], request.c_str(), request.length());
               }
-              write(polls[i].fd, response.c_str(), response.length());
-            }
-            else if (command == "REPLCONF") {
-              write(polls[i].fd, "+OK\r\n", 5);
-            }
-            else if (command == "PSYNC") {
-              std::string response = "+FULLRESYNC " + replid + " 0\r\n";
-              write(polls[i].fd, response.c_str(), response.length());
-
-              // standard char types are signed on most platforms in C++ so
-              // their maximum value is 127. the compiler refuses to forcibly 
-              // compress those larger integers into a signed 8 bit space. changing
-              // the type to unsigned char fixes this, but it needs to be cast 
-              // back to const char* later
-              const unsigned char empty_rdb_bytes[] = {
-                  // all this nonsense is the literal hardcoded binary content of an empty
-                  // Redis database file. because Redis stores all of it's data in RAM for 
-                  // extreme speed, a Redis database file is sort of acting like a videogame 
-                  // save state here. 
-                  // under the hood it's very strict and heavily compressed which is why
-                  // it has to be hardcoded as an array of raw hex bytes
-                  // hex bytes are just a human readable version of binary code
-                  0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 
-                  0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65, 0x64, 0x69, 
-                  0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69, 0x6d, 0x65, 0xc2, 
-                  0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d, 0x65, 0x6d, 0xc2, 0xb0, 
-                  0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61, 0x73, 0x65, 0xc0, 0x00, 0xff, 
-                  0xf1, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2
-              };
-              std::string empty_rdb(reinterpret_cast<const char*>(empty_rdb_bytes), sizeof(empty_rdb_bytes));
-              std::string rdb_header = "$" + std::to_string(empty_rdb.length()) + "\r\n";
-
-              write(polls[i].fd, rdb_header.c_str(), rdb_header.length());
-              write(polls[i].fd, empty_rdb.c_str(), empty_rdb.length());
-
-              replica_fds.push_back(polls[i].fd);
             }
             else {
               write(polls[i].fd, "+PONG\r\n", 7);
