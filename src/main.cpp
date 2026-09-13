@@ -119,7 +119,33 @@ void handle_command(const std::vector<std::string>& parsed_elements,
     if (reply_fd != -1) write(reply_fd, "+PONG\r\n", 7);
   }
 
-  
+
+}
+
+// keeps reading from fd, appending onto buf, until buf holds at least
+// `needed` bytes total. returns false if the connection closes/errors first.
+bool ensure_bytes(int fd, std::string &buf, size_t needed) {
+  while (buf.size() < needed) {
+    char chunk[4096];
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    if (n <= 0) return false;
+    buf.append(chunk, static_cast<size_t>(n));
+  }
+  return true;
+}
+
+// keeps reading from fd, appending onto buf, until buf contains a "\r\n".
+// line_pos is set to the index where that "\r\n" starts.
+bool ensure_line(int fd, std::string &buf, size_t &line_pos) {
+  size_t pos;
+  while ((pos = buf.find("\r\n")) == std::string::npos) {
+    char chunk[4096];
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    if (n <= 0) return false;
+    buf.append(chunk, static_cast<size_t>(n));
+  }
+  line_pos = pos;
+  return true;
 }
 
 // the two parameters argc and argv mena argument count and argument
@@ -227,6 +253,11 @@ int main(int argc, char **argv) {
   // propogation purposes
   std::vector<int> replica_fds;
 
+  // per-connection buffer of bytes read but not yet parsed into a complete
+  // RESP command; a single read() can contain a partial command or several
+  // commands back to back, so we can't assume 1 read() == 1 command
+  std::unordered_map<int, std::string> read_buffers;
+
   // keeps track of how many active entries there are in the array
   int pollsCount = 1;
 
@@ -248,65 +279,59 @@ int main(int argc, char **argv) {
     // this is for the replica to connect to the master port for updates
     connect(master_fd, reinterpret_cast<sockaddr*>(&master_addr), sizeof(master_addr));
     
-    // the handshake between the replica and the master
+    // the handshake between the replica and the master. all of these reads share
+    // one running buffer so that bytes belonging to the *next* message (which can
+    // arrive glued onto the same TCP read as the current one) are never dropped.
+    std::string handshake_buf;
+    size_t line_pos;
+
     std::string response = "*1\r\n$4\r\nPING\r\n";
-    // the fd stands for file descriptor. master_fd is an operating number that the
-    // operating system assigns to keep track of the open connection
-    // the c_str function translates std::str into a c style string
     write(master_fd, response.c_str(), response.length());
-    std::array<char, 4096> buffer;
-    int bytesRead = read(master_fd, buffer.data(), buffer.size());
+    ensure_line(master_fd, handshake_buf, line_pos); // +PONG\r\n
+    handshake_buf.erase(0, line_pos + 2);
 
     std::string port_str = std::to_string(port_address);
-    // 3 distinct words, so you need the *3
     response = "*3\r\n";
-    // first word, 8 long
     response += "$8\r\nREPLCONF\r\n";
-    // second, 14 long
     response += "$14\r\nlistening-port\r\n";
-    // lastly for you port
     response += "$" + std::to_string(port_str.length()) + "\r\n" + port_str + "\r\n";
     write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    ensure_line(master_fd, handshake_buf, line_pos); // +OK\r\n
+    handshake_buf.erase(0, line_pos + 2);
 
     response = "*3\r\n";
     response += "$8\r\nREPLCONF\r\n";
     response += "$4\r\ncapa\r\n";
     response += "$6\r\npsync2\r\n";
     write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    ensure_line(master_fd, handshake_buf, line_pos); // +OK\r\n
+    handshake_buf.erase(0, line_pos + 2);
 
     response = "*3\r\n";
     response += "$5\r\nPSYNC\r\n";
     response += "$1\r\n?\r\n";
     response += "$2\r\n-1\r\n";
     write(master_fd, response.c_str(), response.length());
-    bytesRead = read(master_fd, buffer.data(), buffer.size());
+    ensure_line(master_fd, handshake_buf, line_pos); // +FULLRESYNC <id> <offset>\r\n
+    handshake_buf.erase(0, line_pos + 2);
 
-    // 2. Read and discard the RDB file sent by the master
-    std::array<char, 4096> rdb_buffer;
-    bool rdb_done = false;
-    while (!rdb_done) {
-      int n = read(master_fd, rdb_buffer.data(), rdb_buffer.size());
-      if (n <= 0) break;
-      for (int k = 0; k < n; ++k) {
-        if (rdb_buffer[k] == (char)0xff) {
-          char dummy[8];
-          read(master_fd, dummy, sizeof(dummy));
-          rdb_done = true;
-          break;
-        }
-      }
+    // 2. Read the RDB file sent by the master: "$<length>\r\n<length bytes, NO trailing \r\n>"
+    ensure_line(master_fd, handshake_buf, line_pos);
+    size_t rdb_len = static_cast<size_t>(std::stoul(handshake_buf.substr(1, line_pos - 1)));
+    handshake_buf.erase(0, line_pos + 2);
+    ensure_bytes(master_fd, handshake_buf, rdb_len);
+    handshake_buf.erase(0, rdb_len);
+
+    // whatever is left over is the start of the propagated command stream the
+    // master already sent us; hand it to the main loop instead of dropping it
+    if (!handshake_buf.empty()) {
+      read_buffers[master_fd] = handshake_buf;
     }
 
     // 3. NOW register master_fd for polling so it only receives clean RESP commands
     polls[pollsCount] = pollfd{.fd = master_fd, .events = POLLIN};
     ++pollsCount;
   }
-  
-
-  
-
   
   while (true) {
     // the -1 is a timeout value that means "wait indefinitely", the kernel pauses everything
@@ -349,51 +374,76 @@ int main(int argc, char **argv) {
           if (bytesRead <= 0) {
             std::cout << "client disconnected\n";
             close(polls[i].fd);
+            read_buffers.erase(polls[i].fd);
             std::swap(polls[i], polls[pollsCount - 1]);
             --pollsCount;
             --i;
             continue;
           }
-          
-          std::string request(buffer.data(), bytesRead);
-          size_t cursor = 0;
-          std::vector<std::string> parsed_elements;
 
-          if (!request.empty() && request[cursor] == '*') {
-            size_t first_crlf = request.find("\r\n", cursor);
-            if (first_crlf != std::string::npos) {
-              cursor = first_crlf + 2;
-            }
-          }
+          std::string &conn_buf = read_buffers[polls[i].fd];
+          conn_buf.append(buffer.data(), bytesRead);
 
-          while (cursor < request.length()){
-            size_t len_crlf = request.find("\r\n", cursor);
-            if (len_crlf == std::string::npos) break;
+          // a single read() can contain zero, one, or several complete RESP
+          // commands (plus a trailing partial one); drain every complete
+          // command we can and leave the rest buffered for the next read.
+          while (!conn_buf.empty() && conn_buf[0] == '*') {
+            size_t array_crlf = conn_buf.find("\r\n");
+            if (array_crlf == std::string::npos) break; // incomplete, wait for more
 
-            std::string length_str = request.substr(cursor + 1, len_crlf - cursor - 1);
-
+            int argc;
             try {
-              int length = std::stoi(length_str);
-              cursor = len_crlf + 2;
-              std::string element = request.substr(cursor, length);
-              parsed_elements.push_back(element);
-              cursor = cursor + length + 2;
-            } catch (const std::invalid_argument& e) {
+              argc = std::stoi(conn_buf.substr(1, array_crlf - 1));
+            } catch (const std::exception&) {
               std::cout << "Invalid RESP format encountered.\n";
-              break; 
+              conn_buf.clear();
+              break;
             }
-          }
-          
-          if (!parsed_elements.empty()) {
-            std::string command = parsed_elements[0];
-            for (char &c : command) c = std::toupper(c);
 
-            int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
-            handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
+            size_t cursor = array_crlf + 2;
+            std::vector<std::string> parsed_elements;
+            bool complete = true;
 
-            if (command == "SET" && polls[i].fd != master_fd) {
-              for (size_t j = 0; j < replica_fds.size(); ++j) {
-                write(replica_fds[j], request.c_str(), request.length());
+            for (int a = 0; a < argc; ++a) {
+              size_t len_crlf = conn_buf.find("\r\n", cursor);
+              if (len_crlf == std::string::npos || cursor >= conn_buf.size() || conn_buf[cursor] != '$') {
+                complete = false;
+                break;
+              }
+              int length;
+              try {
+                length = std::stoi(conn_buf.substr(cursor + 1, len_crlf - cursor - 1));
+              } catch (const std::exception&) {
+                std::cout << "Invalid RESP format encountered.\n";
+                conn_buf.clear();
+                complete = false;
+                break;
+              }
+              size_t elem_start = len_crlf + 2;
+              if (conn_buf.size() < elem_start + static_cast<size_t>(length) + 2) {
+                complete = false; // incomplete, wait for more
+                break;
+              }
+              parsed_elements.push_back(conn_buf.substr(elem_start, length));
+              cursor = elem_start + length + 2;
+            }
+
+            if (!complete) break;
+
+            std::string command_bytes = conn_buf.substr(0, cursor);
+            conn_buf.erase(0, cursor);
+
+            if (!parsed_elements.empty()) {
+              std::string command = parsed_elements[0];
+              for (char &c : command) c = std::toupper(c);
+
+              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
+              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
+
+              if (command == "SET" && polls[i].fd != master_fd) {
+                for (size_t j = 0; j < replica_fds.size(); ++j) {
+                  write(replica_fds[j], command_bytes.c_str(), command_bytes.length());
+                }
               }
             }
           }
