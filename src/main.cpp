@@ -284,23 +284,18 @@ int main(int argc, char **argv) {
     bytesRead = read(master_fd, buffer.data(), buffer.size());
 
     // 2. Read and discard the RDB file sent by the master
-    std::string rdb_response;
     std::array<char, 4096> rdb_buffer;
-    while (rdb_response.find("\r\n") == std::string::npos) {
+    bool rdb_done = false;
+    while (!rdb_done) {
       int n = read(master_fd, rdb_buffer.data(), rdb_buffer.size());
       if (n <= 0) break;
-      rdb_response.append(rdb_buffer.data(), n);
-    }
-
-    size_t crlf_pos = rdb_response.find("\r\n");
-    if (crlf_pos != std::string::npos && rdb_response[0] == '$') {
-      int rdb_len = std::stoi(rdb_response.substr(1, crlf_pos - 1));
-      int total_read = rdb_response.length() - (crlf_pos + 2);
-      while (total_read < rdb_len) {
-        int to_read = std::min(static_cast<size_t>(rdb_len - total_read), rdb_buffer.size());
-        int n = read(master_fd, rdb_buffer.data(), to_read);
-        if (n <= 0) break;
-        total_read += n;
+      for (int k = 0; k < n; ++k) {
+        if (rdb_buffer[k] == (char)0xff) {
+          char dummy[8];
+          read(master_fd, dummy, sizeof(dummy));
+          rdb_done = true;
+          break;
+        }
       }
     }
 
