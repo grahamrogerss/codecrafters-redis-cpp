@@ -375,6 +375,12 @@ int main(int argc, char **argv) {
             std::cout << "client disconnected\n";
             close(polls[i].fd);
             read_buffers.erase(polls[i].fd);
+            // fd numbers get reused by the OS once closed; if this was the
+            // master connection, forget it so a later accept()'d client fd
+            // that happens to reuse the same number isn't mistaken for it
+            if (polls[i].fd == master_fd) {
+              master_fd = -1;
+            }
             std::swap(polls[i], polls[pollsCount - 1]);
             --pollsCount;
             --i;
