@@ -333,7 +333,7 @@ int main(int argc, char **argv) {
 
         // since the first slot is the server socket, this check determines that the activity
         // is on the server socket: it's a client trying to connect
-        if (i == 0) {
+        if (polls[i].fd == server_fd) {
           std::cout << "new client!\n";
           sockaddr_in client_addr{};
           int client_addr_len = sizeof(client_addr);
@@ -341,24 +341,15 @@ int main(int argc, char **argv) {
           if (const int client_fd = accept(
               server_fd, reinterpret_cast<struct sockaddr *>(&client_addr), 
               reinterpret_cast<socklen_t *>(&client_addr_len)); client_fd >= 0) {
-            // this creates a new active socket in the polls array. it's a pollfd... it's a 
-            // client_fd, and the event is a poll input
             polls[pollsCount] = pollfd{.fd = client_fd, .events = POLLIN};
-            // because now there's one more active socket, so next time poll() is called it
-            // knows to monitor this new client socket as well.
             ++pollsCount;
           }
-        } else {
+        } 
+        else {
           std::cout << "new data!\n";
 
-          // this is going to be standard, basically the buffer is temporary storage that exists
-          // for you to dump your data into once you read it. 4096 is going to be the standard
-          // buffer size for whatever new data is received.
           std::array<char, 4096> buffer{};
-          const auto bytesRead = 
-              // looks at the incoming data, copies that data into the buffer, and returns the 
-              // number of bytes that it actually wrote
-              read(polls[i].fd, buffer.data(), buffer.size());
+          const auto bytesRead = read(polls[i].fd, buffer.data(), buffer.size());
 
           if (bytesRead <= 0) {
             std::cout << "client disconnected\n";
@@ -369,13 +360,10 @@ int main(int argc, char **argv) {
             continue;
           }
           
-          // this gets the data that's come in, initializes how far the cursor is
-          std::cout << "received data from a client\n";
           std::string request(buffer.data(), bytesRead);
           size_t cursor = 0;
           std::vector<std::string> parsed_elements;
 
-          // Skip the array header line (e.g., "*2\r\n") before entering the loop
           if (!request.empty() && request[cursor] == '*') {
             size_t first_crlf = request.find("\r\n", cursor);
             if (first_crlf != std::string::npos) {
@@ -383,7 +371,6 @@ int main(int argc, char **argv) {
             }
           }
 
-          //
           while (cursor < request.length()){
             size_t len_crlf = request.find("\r\n", cursor);
             if (len_crlf == std::string::npos) break;
@@ -409,7 +396,6 @@ int main(int argc, char **argv) {
             int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
             handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
 
-            // If it was a SET command from a regular client, propagate it to replicas
             if (command == "SET" && polls[i].fd != master_fd) {
               for (size_t j = 0; j < replica_fds.size(); ++j) {
                 write(replica_fds[j], request.c_str(), request.length());
