@@ -97,7 +97,7 @@ void handle_command(const std::vector<std::string>& parsed_elements,
       for (char &c : sub) c = std::toupper(c);
       if (sub == "GETACK") {
         std::string response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
-        if (reply_fd != -1) write(reply_fd, response.c_str, response.length()):
+        if (reply_fd != -1) write(reply_fd, response.c_str(), response.length()):
         return;
       }
     }
