@@ -465,6 +465,10 @@ int main(int argc, char **argv) {
               int target_fd = polls[i].fd;
               handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset);
 
+              if (polls[i].fd == master_fd) {
+                replication_offset += command_bytes.length();
+              }
+
               if (command == "SET" && polls[i].fd != master_fd) {
                 for (size_t j = 0; j < replica_fds.size(); ++j) {
                   write(replica_fds[j], command_bytes.c_str(), command_bytes.length());
