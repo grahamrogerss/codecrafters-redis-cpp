@@ -108,6 +108,9 @@ void handle_command(const std::vector<std::string>& parsed_elements,
         return;
       }
     }
+    if (reply_fd != -1) {
+      write(reply_fd, "+OK\r\n", 5);
+    }
   }
   else if (command == "PSYNC") {
     std::string response = "+FULLRESYNC " + replid + " 0\r\n";
