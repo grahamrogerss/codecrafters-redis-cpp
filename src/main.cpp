@@ -35,7 +35,8 @@ void handle_command(const std::vector<std::string>& parsed_elements,
                     int reply_fd,
                     const std::string& replid,
                     std::vector<int>& replica_fds,
-                    const std::string& role) {
+                    const std::string& role,
+                    long long replication_offset) {
   if (parsed_elements.empty()) return;
   std::string command = parsed_elements[0];
   for (char &c : command) c = std::toupper(c);
@@ -348,6 +349,8 @@ int main(int argc, char **argv) {
     polls[pollsCount] = pollfd{.fd = master_fd, .events = POLLIN};
     ++pollsCount;
   }
+
+  long long replication_offset = 0;
   
   while (true) {
     // the -1 is a timeout value that means "wait indefinitely", the kernel pauses everything
