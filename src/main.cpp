@@ -96,7 +96,9 @@ void handle_command(const std::vector<std::string>& parsed_elements,
       std::string sub = parsed_elements[1];
       for (char &c : sub) c = std::toupper(c);
       if (sub == "GETACK") {
-        std::string response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
+        std::string response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$" + 
+                               std::to_string(std::to_string(replication_offset).length()) + 
+                               "\r\n" + std::to_string(replication_offset) + "\r\n";
         if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
         return;
       }
@@ -362,7 +364,7 @@ int main(int argc, char **argv) {
         }
 
         if (polls[i].fd == master_fd) {
-
+          replication_offset += command_bytes.length();
         }
 
         // since the first slot is the server socket, this check determines that the activity
