@@ -95,16 +95,19 @@ void handle_command(const std::vector<std::string>& parsed_elements,
   else if (command == "REPLCONF") {
     if (parsed_elements.size() > 1) {
       std::string sub = parsed_elements[1];
-      for (char &c : sub) c = std::toupper(c);
+      for (char &c : sub) sub[c] = std::toupper(c); // Ensure correct casing check
+      
+      // Handle GETACK specifically and return immediately
       if (sub == "GETACK") {
+        std::string offset_str = std::to_string(replication_offset);
         std::string response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$" + 
-                               std::to_string(std::to_string(replication_offset).length()) + 
-                               "\r\n" + std::to_string(replication_offset) + "\r\n";
-        if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
+                               std::to_string(offset_str.length()) + "\r\n" + offset_str + "\r\n";
+        if (reply_fd != -1) {
+          write(reply_fd, response.c_str(), response.length());
+        }
         return;
       }
     }
-    if (reply_fd != -1) write(reply_fd, "+OK\r\n", 5);
   }
   else if (command == "PSYNC") {
     std::string response = "+FULLRESYNC " + replid + " 0\r\n";
