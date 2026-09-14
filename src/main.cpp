@@ -170,6 +170,83 @@ bool ensure_line(int fd, std::string &buf, size_t &line_pos) {
   return true;
 }
 
+// drains every complete RESP command currently sitting in conn_buf for fd,
+// leaving any trailing partial command buffered for next time. Called both
+// after a fresh read() and right after the handshake, since leftover bytes
+// already sitting in a buffer will never trigger a fresh poll() event on
+// their own.
+void process_buffer(std::string &conn_buf, int fd, int master_fd,
+                    std::unordered_map<std::string, RedisValue>& map,
+                    const std::string& replid,
+                    std::vector<int>& replica_fds,
+                    const std::string& role,
+                    long long &replication_offset) {
+  while (!conn_buf.empty() && conn_buf[0] == '*') {
+    size_t array_crlf = conn_buf.find("\r\n");
+    if (array_crlf == std::string::npos) break; // incomplete, wait for more
+
+    int argc;
+    try {
+      argc = std::stoi(conn_buf.substr(1, array_crlf - 1));
+    } catch (const std::exception&) {
+      std::cout << "Invalid RESP format encountered.\n";
+      conn_buf.clear();
+      break;
+    }
+
+    size_t cursor = array_crlf + 2;
+    std::vector<std::string> parsed_elements;
+    bool complete = true;
+
+    for (int a = 0; a < argc; ++a) {
+      size_t len_crlf = conn_buf.find("\r\n", cursor);
+      if (len_crlf == std::string::npos || cursor >= conn_buf.size() || conn_buf[cursor] != '$') {
+        complete = false;
+        break;
+      }
+      int length;
+      try {
+        length = std::stoi(conn_buf.substr(cursor + 1, len_crlf - cursor - 1));
+      } catch (const std::exception&) {
+        std::cout << "Invalid RESP format encountered.\n";
+        conn_buf.clear();
+        complete = false;
+        break;
+      }
+      size_t elem_start = len_crlf + 2;
+      if (conn_buf.size() < elem_start + static_cast<size_t>(length) + 2) {
+        complete = false; // incomplete, wait for more
+        break;
+      }
+      parsed_elements.push_back(conn_buf.substr(elem_start, length));
+      cursor = elem_start + length + 2;
+    }
+
+    if (!complete) break;
+
+    std::string command_bytes = conn_buf.substr(0, cursor);
+    conn_buf.erase(0, cursor);
+
+    if (!parsed_elements.empty()) {
+      std::string command = parsed_elements[0];
+      for (char &c : command) c = std::toupper(c);
+
+      int target_fd = (fd == master_fd) ? -1 : fd;
+      handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset, master_fd);
+
+      if (fd == master_fd) {
+        replication_offset += command_bytes.length();
+      }
+
+      if (command == "SET" && fd != master_fd) {
+        for (size_t j = 0; j < replica_fds.size(); ++j) {
+          write(replica_fds[j], command_bytes.c_str(), command_bytes.length());
+        }
+      }
+    }
+  }
+}
+
 // the two parameters argc and argv mena argument count and argument
 // vector, which is an array of C style strings containing the commands
 int main(int argc, char **argv) {
@@ -356,6 +433,13 @@ int main(int argc, char **argv) {
   }
 
   long long replication_offset = 0;
+
+  // process any command(s) that were already read off the wire during the
+  // handshake (e.g. a REPLCONF GETACK * glued onto the same TCP segment as
+  // the RDB bytes) -- poll() won't tell us about data we've already read()'d
+  if (role == "slave" && read_buffers.count(master_fd) && !read_buffers[master_fd].empty()) {
+    process_buffer(read_buffers[master_fd], master_fd, master_fd, map, replid, replica_fds, role, replication_offset);
+  }
   
   while (true) {
     // the -1 is a timeout value that means "wait indefinitely", the kernel pauses everything
@@ -414,70 +498,7 @@ int main(int argc, char **argv) {
           // a single read() can contain zero, one, or several complete RESP
           // commands (plus a trailing partial one); drain every complete
           // command we can and leave the rest buffered for the next read.
-          while (!conn_buf.empty() && conn_buf[0] == '*') {
-            size_t array_crlf = conn_buf.find("\r\n");
-            if (array_crlf == std::string::npos) break; // incomplete, wait for more
-
-            int argc;
-            try {
-              argc = std::stoi(conn_buf.substr(1, array_crlf - 1));
-            } catch (const std::exception&) {
-              std::cout << "Invalid RESP format encountered.\n";
-              conn_buf.clear();
-              break;
-            }
-
-            size_t cursor = array_crlf + 2;
-            std::vector<std::string> parsed_elements;
-            bool complete = true;
-
-            for (int a = 0; a < argc; ++a) {
-              size_t len_crlf = conn_buf.find("\r\n", cursor);
-              if (len_crlf == std::string::npos || cursor >= conn_buf.size() || conn_buf[cursor] != '$') {
-                complete = false;
-                break;
-              }
-              int length;
-              try {
-                length = std::stoi(conn_buf.substr(cursor + 1, len_crlf - cursor - 1));
-              } catch (const std::exception&) {
-                std::cout << "Invalid RESP format encountered.\n";
-                conn_buf.clear();
-                complete = false;
-                break;
-              }
-              size_t elem_start = len_crlf + 2;
-              if (conn_buf.size() < elem_start + static_cast<size_t>(length) + 2) {
-                complete = false; // incomplete, wait for more
-                break;
-              }
-              parsed_elements.push_back(conn_buf.substr(elem_start, length));
-              cursor = elem_start + length + 2;
-            }
-
-            if (!complete) break;
-
-            std::string command_bytes = conn_buf.substr(0, cursor);
-            conn_buf.erase(0, cursor);
-
-            if (!parsed_elements.empty()) {
-              std::string command = parsed_elements[0];
-              for (char &c : command) c = std::toupper(c);
-
-              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
-              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset, master_fd);
-
-              if (polls[i].fd == master_fd) {
-                replication_offset += command_bytes.length();
-              }
-
-              if (command == "SET" && polls[i].fd != master_fd) {
-                for (size_t j = 0; j < replica_fds.size(); ++j) {
-                  write(replica_fds[j], command_bytes.c_str(), command_bytes.length());
-                }
-              }
-            }
-          }
+          process_buffer(conn_buf, polls[i].fd, master_fd, map, replid, replica_fds, role, replication_offset);
         }
       }
     }
