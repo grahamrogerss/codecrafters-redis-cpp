@@ -95,16 +95,14 @@ void handle_command(const std::vector<std::string>& parsed_elements,
   else if (command == "REPLCONF") {
     if (parsed_elements.size() > 1) {
       std::string sub = parsed_elements[1];
-      for (char &c : sub) sub[c] = std::toupper(c); // Ensure correct casing check
+      for (char &c : sub) c = std::toupper(static_cast<unsigned char>(c));
       
       // Handle GETACK specifically and return immediately
       if (sub == "GETACK") {
         std::string offset_str = std::to_string(replication_offset);
         std::string response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$" + 
                                std::to_string(offset_str.length()) + "\r\n" + offset_str + "\r\n";
-        if (reply_fd != -1) {
-          write(reply_fd, response.c_str(), response.length());
-        }
+        write(master_fd, response.c_str(), response.length());
         return;
       }
     }
@@ -465,7 +463,7 @@ int main(int argc, char **argv) {
               std::string command = parsed_elements[0];
               for (char &c : command) c = std::toupper(c);
 
-              int target_fd = polls[i].fd;
+              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
               handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset);
 
               if (polls[i].fd == master_fd) {
