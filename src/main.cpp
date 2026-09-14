@@ -463,7 +463,7 @@ int main(int argc, char **argv) {
               for (char &c : command) c = std::toupper(c);
 
               int target_fd = polls[i].fd;
-              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
+              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset);
 
               if (command == "SET" && polls[i].fd != master_fd) {
                 for (size_t j = 0; j < replica_fds.size(); ++j) {
