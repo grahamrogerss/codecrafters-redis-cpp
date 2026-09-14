@@ -36,7 +36,7 @@ void handle_command(const std::vector<std::string>& parsed_elements,
                     const std::string& replid,
                     std::vector<int>& replica_fds,
                     const std::string& role,
-                    long long replication_offset) {
+                    long long &replication_offset) {
   if (parsed_elements.empty()) return;
   std::string command = parsed_elements[0];
   for (char &c : command) c = std::toupper(c);
@@ -366,9 +366,6 @@ int main(int argc, char **argv) {
           continue;
         }
 
-        if (polls[i].fd == master_fd) {
-          replication_offset += command_bytes.length();
-        }
 
         // since the first slot is the server socket, this check determines that the activity
         // is on the server socket: it's a client trying to connect
