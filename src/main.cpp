@@ -457,7 +457,7 @@ int main(int argc, char **argv) {
               std::string command = parsed_elements[0];
               for (char &c : command) c = std::toupper(c);
 
-              int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
+              int target_fd = polls[i].fd;
               handle_command(parsed_elements, map, target_fd, replid, replica_fds, role);
 
               if (command == "SET" && polls[i].fd != master_fd) {
