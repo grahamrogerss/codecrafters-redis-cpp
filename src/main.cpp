@@ -30,13 +30,14 @@ long long current_time_ms() {
   }
 
 
-void handle_command(const std::vector<std::string>& parsed_elements, 
-                    std::unordered_map<std::string, RedisValue>& map, 
+void handle_command(const std::vector<std::string>& parsed_elements,
+                    std::unordered_map<std::string, RedisValue>& map,
                     int reply_fd,
                     const std::string& replid,
                     std::vector<int>& replica_fds,
                     const std::string& role,
-                    long long &replication_offset) {
+                    long long &replication_offset,
+                    int master_fd) {
   if (parsed_elements.empty()) return;
   std::string command = parsed_elements[0];
   for (char &c : command) c = std::toupper(c);
@@ -464,7 +465,7 @@ int main(int argc, char **argv) {
               for (char &c : command) c = std::toupper(c);
 
               int target_fd = (polls[i].fd == master_fd) ? -1 : polls[i].fd;
-              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset);
+              handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset, master_fd);
 
               if (polls[i].fd == master_fd) {
                 replication_offset += command_bytes.length();
