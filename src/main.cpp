@@ -132,6 +132,10 @@ void handle_command(const std::vector<std::string>& parsed_elements,
       replica_fds.push_back(reply_fd);
     }
   }
+  else if (command == "WAIT" && parsed_elements.size() > 2) {
+    std::string response = ":" + std::to_string(replica_fds.size()) + "\r\n";
+    if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
+  }
   else if (command == "ECHO" && parsed_elements.size() > 1) {
     std::string arg = parsed_elements[1];
     std::string response = "$" + std::to_string(arg.length()) + "\r\n" + arg + "\r\n";
