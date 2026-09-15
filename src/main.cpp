@@ -30,6 +30,47 @@ long long current_time_ms() {
   }
 
 
+// tries to parse one complete RESP array command from the front of buf.
+// on success, fills parsed_elements and sets consumed to the number of
+// bytes it occupies (caller decides whether/when to erase them).
+bool try_parse_resp_array(const std::string &buf, std::vector<std::string> &parsed_elements, size_t &consumed) {
+  if (buf.empty() || buf[0] != '*') return false;
+  size_t array_crlf = buf.find("\r\n");
+  if (array_crlf == std::string::npos) return false;
+
+  int argc;
+  try {
+    argc = std::stoi(buf.substr(1, array_crlf - 1));
+  } catch (const std::exception&) {
+    return false;
+  }
+
+  size_t cursor = array_crlf + 2;
+  parsed_elements.clear();
+
+  for (int a = 0; a < argc; ++a) {
+    size_t len_crlf = buf.find("\r\n", cursor);
+    if (len_crlf == std::string::npos || cursor >= buf.size() || buf[cursor] != '$') {
+      return false;
+    }
+    int length;
+    try {
+      length = std::stoi(buf.substr(cursor + 1, len_crlf - cursor - 1));
+    } catch (const std::exception&) {
+      return false;
+    }
+    size_t elem_start = len_crlf + 2;
+    if (buf.size() < elem_start + static_cast<size_t>(length) + 2) {
+      return false;
+    }
+    parsed_elements.push_back(buf.substr(elem_start, length));
+    cursor = elem_start + length + 2;
+  }
+
+  consumed = cursor;
+  return true;
+}
+
 void handle_command(const std::vector<std::string>& parsed_elements,
                     std::unordered_map<std::string, RedisValue>& map,
                     int reply_fd,
@@ -37,7 +78,8 @@ void handle_command(const std::vector<std::string>& parsed_elements,
                     std::vector<int>& replica_fds,
                     const std::string& role,
                     long long &replication_offset,
-                    int master_fd) {
+                    int master_fd,
+                    std::unordered_map<int, long long>& replica_ack_offsets) {
   if (parsed_elements.empty()) return;
   std::string command = parsed_elements[0];
   for (char &c : command) c = std::toupper(c);
@@ -133,7 +175,74 @@ void handle_command(const std::vector<std::string>& parsed_elements,
     }
   }
   else if (command == "WAIT" && parsed_elements.size() > 2) {
-    std::string response = ":" + std::to_string(replica_fds.size()) + "\r\n";
+    int num_replicas_needed = std::stoi(parsed_elements[1]);
+    int timeout_ms = std::stoi(parsed_elements[2]);
+
+    // target_offset is the number of propagated-write bytes the replicas
+    // need to have processed to be considered "caught up" for this WAIT
+    long long target_offset = replication_offset;
+
+    auto count_acked = [&]() {
+      int count = 0;
+      for (int fd : replica_fds) {
+        if (replica_ack_offsets[fd] >= target_offset) ++count;
+      }
+      return count;
+    };
+
+    int acked = count_acked();
+
+    if (target_offset > 0 && acked < num_replicas_needed && !replica_fds.empty()) {
+      std::string getack = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+      for (int fd : replica_fds) {
+        write(fd, getack.c_str(), getack.length());
+      }
+      // this GETACK itself becomes part of the replication stream, so future
+      // WAITs (and the replicas' own offset tracking) need to account for it
+      replication_offset += getack.length();
+
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+      std::unordered_map<int, std::string> ack_bufs;
+
+      while (count_acked() < num_replicas_needed) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) break;
+        int remaining_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        if (remaining_ms <= 0) break;
+
+        std::vector<pollfd> wait_polls;
+        for (int fd : replica_fds) wait_polls.push_back(pollfd{fd, POLLIN, 0});
+
+        int ready = poll(wait_polls.data(), wait_polls.size(), remaining_ms);
+        if (ready <= 0) break; // timeout, or error
+
+        for (auto &pfd : wait_polls) {
+          if (!(pfd.revents & POLLIN)) continue;
+          char chunk[4096];
+          ssize_t n = read(pfd.fd, chunk, sizeof(chunk));
+          if (n <= 0) continue;
+          ack_bufs[pfd.fd].append(chunk, static_cast<size_t>(n));
+
+          std::string &b = ack_bufs[pfd.fd];
+          std::vector<std::string> elems;
+          size_t consumed;
+          while (try_parse_resp_array(b, elems, consumed)) {
+            b.erase(0, consumed);
+            if (elems.size() == 3) {
+              std::string sub = elems[1];
+              for (char &c : sub) c = std::toupper(static_cast<unsigned char>(c));
+              if (sub == "ACK") {
+                replica_ack_offsets[pfd.fd] = std::stoll(elems[2]);
+              }
+            }
+          }
+        }
+      }
+      acked = count_acked();
+    }
+
+    std::string response = ":" + std::to_string(acked) + "\r\n";
     if (reply_fd != -1) write(reply_fd, response.c_str(), response.length());
   }
   else if (command == "ECHO" && parsed_elements.size() > 1) {
@@ -184,7 +293,8 @@ void process_buffer(std::string &conn_buf, int fd, int master_fd,
                     const std::string& replid,
                     std::vector<int>& replica_fds,
                     const std::string& role,
-                    long long &replication_offset) {
+                    long long &replication_offset,
+                    std::unordered_map<int, long long>& replica_ack_offsets) {
   while (!conn_buf.empty() && conn_buf[0] == '*') {
     size_t array_crlf = conn_buf.find("\r\n");
     if (array_crlf == std::string::npos) break; // incomplete, wait for more
@@ -236,7 +346,7 @@ void process_buffer(std::string &conn_buf, int fd, int master_fd,
       for (char &c : command) c = std::toupper(c);
 
       int target_fd = (fd == master_fd) ? -1 : fd;
-      handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset, master_fd);
+      handle_command(parsed_elements, map, target_fd, replid, replica_fds, role, replication_offset, master_fd, replica_ack_offsets);
 
       if (fd == master_fd) {
         replication_offset += command_bytes.length();
@@ -246,6 +356,9 @@ void process_buffer(std::string &conn_buf, int fd, int master_fd,
         for (size_t j = 0; j < replica_fds.size(); ++j) {
           write(replica_fds[j], command_bytes.c_str(), command_bytes.length());
         }
+        // bytes just propagated to replicas count toward the master's own
+        // replication offset, which WAIT compares replica ACKs against
+        replication_offset += command_bytes.length();
       }
     }
   }
@@ -356,6 +469,10 @@ int main(int argc, char **argv) {
   // propogation purposes
   std::vector<int> replica_fds;
 
+  // last offset each replica reported via REPLCONF ACK, used by WAIT to
+  // decide how many replicas have caught up
+  std::unordered_map<int, long long> replica_ack_offsets;
+
   // per-connection buffer of bytes read but not yet parsed into a complete
   // RESP command; a single read() can contain a partial command or several
   // commands back to back, so we can't assume 1 read() == 1 command
@@ -442,7 +559,7 @@ int main(int argc, char **argv) {
   // handshake (e.g. a REPLCONF GETACK * glued onto the same TCP segment as
   // the RDB bytes) -- poll() won't tell us about data we've already read()'d
   if (role == "slave" && read_buffers.count(master_fd) && !read_buffers[master_fd].empty()) {
-    process_buffer(read_buffers[master_fd], master_fd, master_fd, map, replid, replica_fds, role, replication_offset);
+    process_buffer(read_buffers[master_fd], master_fd, master_fd, map, replid, replica_fds, role, replication_offset, replica_ack_offsets);
   }
   
   while (true) {
@@ -502,7 +619,7 @@ int main(int argc, char **argv) {
           // a single read() can contain zero, one, or several complete RESP
           // commands (plus a trailing partial one); drain every complete
           // command we can and leave the rest buffered for the next read.
-          process_buffer(conn_buf, polls[i].fd, master_fd, map, replid, replica_fds, role, replication_offset);
+          process_buffer(conn_buf, polls[i].fd, master_fd, map, replid, replica_fds, role, replication_offset, replica_ack_offsets);
         }
       }
     }
